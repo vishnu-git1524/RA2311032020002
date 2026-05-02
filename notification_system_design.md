@@ -317,3 +317,150 @@ DELETE FROM user_notifications WHERE created_at < NOW() - INTERVAL '90 days';
 - **Start with SQL (PostgreSQL)**: Provides strong consistency, relational queries, and proven scalability with indexing + read replicas.
 - **Move to hybrid if scale demands it**: Use NoSQL (e.g. DynamoDB) for the notification feed/timeline as a read-optimized store, while keeping SQL as the source of truth for users and notification metadata.
 
+---
+
+# Stage 3: Query Optimization and Indexing Strategy
+
+## 1. Slow Query Analysis
+
+### The Query
+
+```sql
+SELECT *
+FROM notifications
+WHERE studentID = 1042 AND isRead = false
+ORDER BY createdAt DESC;
+```
+
+### Why It Is Slow
+
+| Problem | Explanation |
+|---------|-------------|
+| **Full table scan** | No index on `studentID` or `isRead` — the database reads every row to find matches. |
+| **Sorting large dataset** | `ORDER BY createdAt DESC` forces a file-sort on all matched rows since no index covers the sort order. |
+| **No proper indexing** | Without a composite index that covers the `WHERE` + `ORDER BY`, the query planner cannot use an efficient range scan. |
+
+At scale (millions of rows), this query degrades from milliseconds to seconds.
+
+---
+
+## 2. Why "Index Every Column" Is Wrong
+
+A common but incorrect suggestion: *"Just add an index on every column."*
+
+| Drawback | Impact |
+|----------|--------|
+| **Increased write latency** | Every `INSERT`, `UPDATE`, and `DELETE` must update all indexes. For a high-write table like notifications, this multiplies write cost significantly. |
+| **High storage overhead** | Each index consumes disk space proportional to the table size. Indexing every column can double or triple storage requirements. |
+| **Inefficient index usage** | The query planner may choose suboptimal single-column indexes or ignore them entirely. Multiple single-column indexes rarely combine as efficiently as one well-designed composite index. |
+
+**Rule of thumb**: Index for your query patterns, not your columns.
+
+---
+
+## 3. Optimal Solution — Composite Index
+
+```sql
+CREATE INDEX idx_notifications_user_read_created
+ON notifications (studentID, isRead, createdAt DESC);
+```
+
+### How It Works
+
+```
+Index B-Tree structure:
+
+studentID = 1042
+  └── isRead = false
+        └── createdAt DESC (already sorted)
+```
+
+| Step | What Happens |
+|------|-------------|
+| **1. Filter by `studentID`** | Index seek — jumps directly to entries for student 1042. |
+| **2. Filter by `isRead`** | Narrows within the same index range — no extra scan. |
+| **3. Sort by `createdAt DESC`** | Already stored in descending order in the index — **no file-sort needed**. |
+
+**Result**: Index-only range scan → orders of magnitude faster than a full table scan.
+
+---
+
+## 4. Query Optimization Improvements
+
+### Avoid `SELECT *`
+
+Fetch only the columns you need. Reduces I/O, memory, and network transfer.
+
+### Add Pagination
+
+Prevents returning thousands of rows at once.
+
+### Optimized Query
+
+```sql
+SELECT id, title, message, createdAt
+FROM notifications
+WHERE studentID = 1042 AND isRead = false
+ORDER BY createdAt DESC
+LIMIT 20;
+```
+
+| Improvement | Benefit |
+|-------------|---------|
+| Named columns instead of `*` | Less data transferred, potential covering index |
+| `LIMIT 20` | Returns only one page of results |
+| Composite index | Eliminates full scan + file-sort |
+
+### Cursor-Based Pagination (For Deep Pages)
+
+```sql
+SELECT id, title, message, createdAt
+FROM notifications
+WHERE studentID = 1042
+  AND isRead = false
+  AND createdAt < '2026-05-01T00:00:00Z'
+ORDER BY createdAt DESC
+LIMIT 20;
+```
+
+- Uses `createdAt` as the cursor — avoids `OFFSET` performance degradation on large datasets.
+
+---
+
+## 5. Second Problem — Students Notified by Type
+
+### Requirement
+
+Find all students who received a "Placement" notification in the last 7 days.
+
+### Optimized Query
+
+```sql
+SELECT DISTINCT studentID
+FROM notifications
+WHERE type = 'Placement'
+  AND createdAt >= NOW() - INTERVAL 7 DAY;
+```
+
+### Recommended Index
+
+```sql
+CREATE INDEX idx_notifications_type_created
+ON notifications (type, createdAt);
+```
+
+### Why This Works
+
+| Step | Explanation |
+|------|-------------|
+| **Index seek on `type`** | Jumps to all `'Placement'` entries. |
+| **Range scan on `createdAt`** | Within the `type` partition, scans only the last 7 days — skips older rows entirely. |
+| **`DISTINCT` on `studentID`** | De-duplicates in memory over a small result set (only recent rows). |
+
+### Index Summary Table
+
+| Index | Covers Query | Purpose |
+|-------|-------------|---------|
+| `(studentID, isRead, createdAt DESC)` | Unread notifications per student | Filter + sort without file-sort |
+| `(type, createdAt)` | Notifications by type in date range | Type filter + date range scan |
+
