@@ -2,16 +2,16 @@
 
 ## Overview
 
-REST API design for a backend notification platform that supports sending, retrieving, updating, and deleting notifications with real-time delivery capabilities.
+This design covers a REST API for sending, reading, updating, and deleting notifications. It also includes a real-time delivery path so users do not need to keep polling when they are already connected.
 
 ---
 
 ## Common Headers
 
-| Header          | Value                 | Required |
-|-----------------|-----------------------|----------|
-| Authorization   | `Bearer <token>`      | Yes      |
-| Content-Type    | `application/json`    | Yes      |
+| Header | Value | Required |
+|--------|-------|----------|
+| Authorization | `Bearer <token>` | Yes |
+| Content-Type | `application/json` | Yes |
 
 ---
 
@@ -19,7 +19,7 @@ REST API design for a backend notification platform that supports sending, retri
 
 ### A. `POST /notifications/send`
 
-Send a notification to one or multiple users.
+Sends a notification to one or more users.
 
 **Request Body**
 
@@ -32,14 +32,14 @@ Send a notification to one or multiple users.
 }
 ```
 
-| Field     | Type       | Description                             |
-|-----------|------------|-----------------------------------------|
-| userIds   | `string[]` | List of target user IDs                 |
-| title     | `string`   | Notification title                      |
-| message   | `string`   | Notification body                       |
-| type      | `string`   | One of: `info`, `alert`, `warning`      |
+| Field | Type | Description |
+|-------|------|-------------|
+| userIds | `string[]` | List of target user IDs |
+| title | `string` | Notification title |
+| message | `string` | Notification body |
+| type | `string` | One of: `info`, `alert`, `warning` |
 
-**Response** — `201 Created`
+**Response** - `201 Created`
 
 ```json
 {
@@ -52,9 +52,9 @@ Send a notification to one or multiple users.
 
 ### B. `GET /notifications/{userId}`
 
-Fetch all notifications for a specific user.
+Returns notifications for a single user.
 
-**Response** — `200 OK`
+**Response** - `200 OK`
 
 ```json
 {
@@ -71,22 +71,22 @@ Fetch all notifications for a specific user.
 }
 ```
 
-| Field     | Type        | Description                        |
-|-----------|-------------|------------------------------------|
-| id        | `string`    | Unique notification ID             |
-| title     | `string`    | Notification title                 |
-| message   | `string`    | Notification body                  |
-| type      | `string`    | `info` / `alert` / `warning`       |
-| read      | `boolean`   | Whether the user has read it       |
-| createdAt | `timestamp` | ISO 8601 creation timestamp        |
+| Field | Type | Description |
+|-------|------|-------------|
+| id | `string` | Unique notification ID |
+| title | `string` | Notification title |
+| message | `string` | Notification body |
+| type | `string` | `info` / `alert` / `warning` |
+| read | `boolean` | Whether the user has read it |
+| createdAt | `timestamp` | ISO 8601 creation timestamp |
 
 ---
 
 ### C. `PATCH /notifications/{id}/read`
 
-Mark a single notification as read.
+Marks one notification as read.
 
-**Response** — `200 OK`
+**Response** - `200 OK`
 
 ```json
 {
@@ -98,9 +98,9 @@ Mark a single notification as read.
 
 ### D. `DELETE /notifications/{id}`
 
-Delete a notification permanently.
+Deletes a notification permanently.
 
-**Response** — `200 OK`
+**Response** - `200 OK`
 
 ```json
 {
@@ -112,7 +112,7 @@ Delete a notification permanently.
 
 ## Error Response Format
 
-All endpoints return errors in a consistent structure:
+Errors use the same shape across all endpoints:
 
 ```json
 {
@@ -123,12 +123,12 @@ All endpoints return errors in a consistent structure:
 }
 ```
 
-| Code                | HTTP Status | When                              |
-|---------------------|-------------|-----------------------------------|
-| `UNAUTHORIZED`      | 401         | Missing or invalid Bearer token   |
-| `NOT_FOUND`         | 404         | Notification or user not found    |
-| `VALIDATION_ERROR`  | 400         | Malformed or missing fields       |
-| `INTERNAL_ERROR`    | 500         | Unexpected server failure         |
+| Code | HTTP Status | When |
+|------|-------------|------|
+| `UNAUTHORIZED` | 401 | Missing or invalid Bearer token |
+| `NOT_FOUND` | 404 | Notification or user not found |
+| `VALIDATION_ERROR` | 400 | Malformed or missing fields |
+| `INTERNAL_ERROR` | 500 | Unexpected server failure |
 
 ---
 
@@ -136,31 +136,28 @@ All endpoints return errors in a consistent structure:
 
 ### Delivery Mechanism
 
-Use **WebSockets** or **Server-Sent Events (SSE)** for instant push delivery.
+Use **WebSockets** or **Server-Sent Events (SSE)** for instant push delivery. In practice, SSE is simpler for one-way server-to-client updates, while WebSockets make sense if the client also needs to send live events back.
 
-```
-┌────────┐          ┌────────────┐          ┌────────┐
-│ Sender │──POST──▶│   Server   │──push──▶ │ Client │
-└────────┘          └────────────┘          └────────┘
-                         │
-                    WebSocket / SSE
-                    connection held open
+```text
+Sender -> POST -> Server -> push -> Client
+                    |
+              WebSocket / SSE
+              connection held open
 ```
 
 ### Flow
 
-1. Client opens a persistent connection (WebSocket or SSE) on login.
-2. When `POST /notifications/send` is called, the server:
-   - Stores the notification.
-   - Pushes it to all connected target users instantly.
-3. Client receives and renders the notification without polling.
+1. Client opens a persistent connection after login.
+2. `POST /notifications/send` stores the notification.
+3. The server pushes it to connected target users immediately.
+4. Client renders the notification without polling.
 
 ### Fallback Strategy
 
-If the real-time connection drops or is unsupported:
+If the real-time connection drops or is not supported:
 
-- Client falls back to **short polling** via `GET /notifications/{userId}` at a configurable interval (e.g. every 15s).
-- On reconnect, the client fetches any missed notifications since the last known timestamp.
+- Client falls back to short polling via `GET /notifications/{userId}` at a configurable interval, for example every 15 seconds.
+- On reconnect, the client fetches missed notifications since the last known timestamp.
 
 ---
 
@@ -168,43 +165,45 @@ If the real-time connection drops or is unsupported:
 
 ## 1. Relational Database Schema
 
+The model keeps notification content separate from per-user state. That matters because one notification can be delivered to many users, but read status belongs to each user individually.
+
 ### A. `users`
 
-| Column | Type         | Constraints       |
-|--------|--------------|--------------------|
-| id     | `UUID`       | Primary Key        |
-| name   | `VARCHAR(255)` | NOT NULL         |
-| email  | `VARCHAR(255)` | NOT NULL, UNIQUE |
+| Column | Type | Constraints |
+|--------|------|-------------|
+| id | `UUID` | Primary Key |
+| name | `VARCHAR(255)` | NOT NULL |
+| email | `VARCHAR(255)` | NOT NULL, UNIQUE |
 
 ### B. `notifications`
 
-| Column     | Type           | Constraints        |
-|------------|----------------|--------------------|
-| id         | `UUID`         | Primary Key        |
-| title      | `VARCHAR(255)` | NOT NULL           |
-| message    | `TEXT`         | NOT NULL           |
-| type       | `ENUM`         | `info`, `alert`, `warning` |
-| created_at | `TIMESTAMP`    | DEFAULT `NOW()`    |
+| Column | Type | Constraints |
+|--------|------|-------------|
+| id | `UUID` | Primary Key |
+| title | `VARCHAR(255)` | NOT NULL |
+| message | `TEXT` | NOT NULL |
+| type | `ENUM` | `info`, `alert`, `warning` |
+| created_at | `TIMESTAMP` | DEFAULT `NOW()` |
 
 ### C. `user_notifications`
 
-| Column          | Type        | Constraints                          |
-|-----------------|-------------|--------------------------------------|
-| id              | `UUID`      | Primary Key                          |
-| user_id         | `UUID`      | Foreign Key → `users.id`             |
-| notification_id | `UUID`      | Foreign Key → `notifications.id`     |
-| read            | `BOOLEAN`   | DEFAULT `false`                      |
-| read_at         | `TIMESTAMP` | NULLABLE                             |
+| Column | Type | Constraints |
+|--------|------|-------------|
+| id | `UUID` | Primary Key |
+| user_id | `UUID` | Foreign Key -> `users.id` |
+| notification_id | `UUID` | Foreign Key -> `notifications.id` |
+| read | `BOOLEAN` | DEFAULT `false` |
+| read_at | `TIMESTAMP` | NULLABLE |
 
 ### Relationships
 
-```
-users (1) ──── (N) user_notifications (N) ──── (1) notifications
+```text
+users (1) ---- (N) user_notifications (N) ---- (1) notifications
 ```
 
-- **One notification** can be sent to **many users** (via `user_notifications`).
-- **One user** can receive **many notifications**.
-- `user_notifications` is the **join table** that tracks per-user read status.
+- One notification can be sent to many users through `user_notifications`.
+- One user can receive many notifications.
+- `user_notifications` tracks read state per user.
 
 ### DDL
 
@@ -236,12 +235,12 @@ CREATE TABLE user_notifications (
 
 ## 2. Potential Scaling Problems
 
-| Problem | Cause |
-|---------|-------|
-| **Large notification volume per user** | Users accumulate thousands of notifications over time, making full-table scans expensive. |
-| **High write throughput** | Broadcasting a single notification to thousands of users generates a burst of `INSERT` operations on `user_notifications`. |
-| **Slow reads** | `GET /notifications/{userId}` becomes slower as the table grows without proper indexing and pagination. |
-| **Real-time delivery delays** | Synchronous DB writes in the notification send path increase response latency and delay WebSocket/SSE push. |
+The main pressure points are predictable for a notification feed:
+
+- **Large notification volume per user**: users accumulate thousands of rows, so full-table scans get expensive.
+- **High write throughput**: sending one notification to thousands of users creates a burst of `INSERT` operations on `user_notifications`.
+- **Slow reads**: `GET /notifications/{userId}` gets worse as the table grows without indexing and pagination.
+- **Real-time delivery delays**: synchronous DB writes on the send path add latency before WebSocket/SSE push can happen.
 
 ---
 
@@ -255,44 +254,46 @@ CREATE INDEX idx_user_notifications_notif_id ON user_notifications(notification_
 CREATE INDEX idx_user_notifications_unread ON user_notifications(user_id, read) WHERE read = FALSE;
 ```
 
-- Composite index on `(user_id, read)` accelerates "unread notifications" queries.
+The `(user_id, read)` index helps unread notification queries avoid scanning a user's full history.
 
 ### Pagination
 
-- **Cursor-based** (preferred): Use `created_at` + `id` as the cursor to avoid offset performance degradation.
+Cursor-based pagination is the better default here. Use `created_at` + `id` as the cursor so deep pages do not degrade the way `OFFSET` does.
 
-```
+```text
 GET /notifications/{userId}?cursor=2026-05-01T00:00:00Z&limit=20
 ```
 
-- **Offset-based** (simpler): `?limit=20&offset=40` — acceptable for small-to-medium datasets.
+Offset-based pagination is still acceptable for small-to-medium datasets:
+
+```text
+GET /notifications/{userId}?limit=20&offset=40
+```
 
 ### Caching (Redis)
 
-- Cache recent/unread notifications per user in Redis sorted sets.
-- Key: `notifications:{userId}` → sorted by `created_at`.
-- TTL: 15–30 minutes. Invalidate on new notification or read.
-- Reduces DB reads by 80%+ for active users.
+- Cache recent or unread notifications per user in Redis sorted sets.
+- Key: `notifications:{userId}`, sorted by `created_at`.
+- TTL: 15-30 minutes.
+- Invalidate on new notification or read.
+- This can cut DB reads by 80%+ for active users.
 
 ### Message Queue (Async Processing)
 
-```
-POST /send  →  Kafka/RabbitMQ  →  Worker  →  DB INSERT + WebSocket push
+```text
+POST /send -> Kafka/RabbitMQ -> Worker -> DB INSERT + WebSocket push
 ```
 
-- Decouple the API response from DB writes and push delivery.
-- The sender gets an immediate `201` response.
-- Workers consume from the queue and handle fan-out (inserting into `user_notifications` + pushing to connected clients).
+This keeps the API response separate from fan-out work. The sender gets a quick `201`, and workers handle inserts plus push delivery in the background.
 
 ### Horizontal Scaling
 
-- **Read replicas**: Route `GET` queries to read replicas to offload the primary DB.
-- **Application-level sharding**: Partition `user_notifications` by `user_id` hash if the table exceeds billions of rows.
+- **Read replicas**: route `GET` queries to replicas so the primary stays focused on writes.
+- **Application-level sharding**: partition `user_notifications` by `user_id` hash once the table reaches billions of rows.
 
 ### Archiving
 
-- Move notifications older than 90 days to a cold storage / archive table.
-- Keeps the hot table small and queries fast.
+Move notifications older than 90 days into cold storage or an archive table. This keeps the hot table small enough for regular queries to stay fast.
 
 ```sql
 INSERT INTO user_notifications_archive SELECT * FROM user_notifications WHERE created_at < NOW() - INTERVAL '90 days';
@@ -303,19 +304,20 @@ DELETE FROM user_notifications WHERE created_at < NOW() - INTERVAL '90 days';
 
 ## 4. SQL vs NoSQL Decision
 
-| Criteria            | SQL (PostgreSQL)                        | NoSQL (MongoDB / DynamoDB)               |
-|---------------------|-----------------------------------------|------------------------------------------|
-| **Consistency**     | Strong (ACID transactions)              | Eventual (tunable)                       |
-| **Relationships**   | Native JOINs across users ↔ notifications | Denormalized, embedded documents        |
-| **Query flexibility** | Full SQL, complex filters             | Limited query patterns                   |
-| **Write throughput** | Good with connection pooling           | Higher out-of-the-box at massive scale   |
-| **Schema**          | Fixed, enforced                         | Flexible, schema-less                    |
-| **Best for**        | Structured relational data, moderate scale | High-velocity feeds, very large scale  |
+| Criteria | SQL (PostgreSQL) | NoSQL (MongoDB / DynamoDB) |
+|----------|------------------|----------------------------|
+| **Consistency** | Strong (ACID transactions) | Eventual (tunable) |
+| **Relationships** | Native JOINs across users -> notifications | Denormalized, embedded documents |
+| **Query flexibility** | Full SQL, complex filters | Limited query patterns |
+| **Write throughput** | Good with connection pooling | Higher out-of-the-box at massive scale |
+| **Schema** | Fixed, enforced | Flexible, schema-less |
+| **Best for** | Structured relational data, moderate scale | High-velocity feeds, very large scale |
 
 ### Conclusion
 
-- **Start with SQL (PostgreSQL)**: Provides strong consistency, relational queries, and proven scalability with indexing + read replicas.
-- **Move to hybrid if scale demands it**: Use NoSQL (e.g. DynamoDB) for the notification feed/timeline as a read-optimized store, while keeping SQL as the source of truth for users and notification metadata.
+Start with **SQL (PostgreSQL)**. It gives strong consistency, relational queries, and a clear path to scale with indexes and read replicas.
+
+If scale later demands it, move to a hybrid model: use NoSQL, such as DynamoDB, for the notification feed or timeline as a read-optimized store, while SQL remains the source of truth for users and notification metadata.
 
 ---
 
@@ -334,31 +336,31 @@ ORDER BY createdAt DESC;
 
 ### Why It Is Slow
 
-| Problem | Explanation |
-|---------|-------------|
-| **Full table scan** | No index on `studentID` or `isRead` — the database reads every row to find matches. |
-| **Sorting large dataset** | `ORDER BY createdAt DESC` forces a file-sort on all matched rows since no index covers the sort order. |
-| **No proper indexing** | Without a composite index that covers the `WHERE` + `ORDER BY`, the query planner cannot use an efficient range scan. |
+Without the right index, the database has to work too hard:
 
-At scale (millions of rows), this query degrades from milliseconds to seconds.
+- No index on `studentID` or `isRead`, so it may read every row to find matches.
+- `ORDER BY createdAt DESC` can force a file-sort over the matched rows.
+- A composite index is needed to cover both the filter and sort pattern.
+
+At millions of rows, this usually moves from milliseconds to seconds.
 
 ---
 
 ## 2. Why "Index Every Column" Is Wrong
 
-A common but incorrect suggestion: *"Just add an index on every column."*
+Adding indexes blindly feels safe, but it creates its own problems.
 
 | Drawback | Impact |
 |----------|--------|
-| **Increased write latency** | Every `INSERT`, `UPDATE`, and `DELETE` must update all indexes. For a high-write table like notifications, this multiplies write cost significantly. |
-| **High storage overhead** | Each index consumes disk space proportional to the table size. Indexing every column can double or triple storage requirements. |
-| **Inefficient index usage** | The query planner may choose suboptimal single-column indexes or ignore them entirely. Multiple single-column indexes rarely combine as efficiently as one well-designed composite index. |
+| **Increased write latency** | Every `INSERT`, `UPDATE`, and `DELETE` must update all indexes. On a high-write table like notifications, that cost adds up quickly. |
+| **High storage overhead** | Each index consumes disk space proportional to the table size. Indexing every column can double or triple storage needs. |
+| **Inefficient index usage** | The planner may choose poor single-column indexes or ignore them. Multiple single-column indexes rarely beat one well-designed composite index. |
 
-**Rule of thumb**: Index for your query patterns, not your columns.
+Rule of thumb: index for query patterns, not for columns.
 
 ---
 
-## 3. Optimal Solution — Composite Index
+## 3. Optimal Solution - Composite Index
 
 ```sql
 CREATE INDEX idx_notifications_user_read_created
@@ -367,21 +369,15 @@ ON notifications (studentID, isRead, createdAt DESC);
 
 ### How It Works
 
-```
-Index B-Tree structure:
-
+```text
 studentID = 1042
-  └── isRead = false
-        └── createdAt DESC (already sorted)
+  -> isRead = false
+      -> createdAt DESC
 ```
 
-| Step | What Happens |
-|------|-------------|
-| **1. Filter by `studentID`** | Index seek — jumps directly to entries for student 1042. |
-| **2. Filter by `isRead`** | Narrows within the same index range — no extra scan. |
-| **3. Sort by `createdAt DESC`** | Already stored in descending order in the index — **no file-sort needed**. |
+The index first seeks directly to `studentID = 1042`, narrows to unread rows, and then reads entries already ordered by `createdAt DESC`. That removes the full scan and avoids a separate file-sort.
 
-**Result**: Index-only range scan → orders of magnitude faster than a full table scan.
+Result: an index-only range scan, which is much faster than scanning the whole table.
 
 ---
 
@@ -389,11 +385,11 @@ studentID = 1042
 
 ### Avoid `SELECT *`
 
-Fetch only the columns you need. Reduces I/O, memory, and network transfer.
+Fetch only the columns the client needs. This reduces I/O, memory use, and network transfer.
 
 ### Add Pagination
 
-Prevents returning thousands of rows at once.
+Do not return an unbounded notification history in one response.
 
 ### Optimized Query
 
@@ -405,11 +401,7 @@ ORDER BY createdAt DESC
 LIMIT 20;
 ```
 
-| Improvement | Benefit |
-|-------------|---------|
-| Named columns instead of `*` | Less data transferred, potential covering index |
-| `LIMIT 20` | Returns only one page of results |
-| Composite index | Eliminates full scan + file-sort |
+This version keeps the response small, avoids unnecessary columns, and works cleanly with the composite index.
 
 ### Cursor-Based Pagination (For Deep Pages)
 
@@ -423,11 +415,11 @@ ORDER BY createdAt DESC
 LIMIT 20;
 ```
 
-- Uses `createdAt` as the cursor — avoids `OFFSET` performance degradation on large datasets.
+Using `createdAt` as the cursor avoids the performance cost of `OFFSET` on large datasets.
 
 ---
 
-## 5. Second Problem — Students Notified by Type
+## 5. Second Problem - Students Notified by Type
 
 ### Requirement
 
@@ -451,16 +443,10 @@ ON notifications (type, createdAt);
 
 ### Why This Works
 
-| Step | Explanation |
-|------|-------------|
-| **Index seek on `type`** | Jumps to all `'Placement'` entries. |
-| **Range scan on `createdAt`** | Within the `type` partition, scans only the last 7 days — skips older rows entirely. |
-| **`DISTINCT` on `studentID`** | De-duplicates in memory over a small result set (only recent rows). |
-
-### Index Summary Table
+The index jumps to `'Placement'` rows first, then scans only the recent `createdAt` range. `DISTINCT studentID` still happens, but over a much smaller result set.
 
 | Index | Covers Query | Purpose |
-|-------|-------------|---------|
+|-------|--------------|---------|
 | `(studentID, isRead, createdAt DESC)` | Unread notifications per student | Filter + sort without file-sort |
 | `(type, createdAt)` | Notifications by type in date range | Type filter + date range scan |
 
@@ -470,17 +456,11 @@ ON notifications (type, createdAt);
 
 ## 1. The Problem
 
-```
-User opens page → GET /notifications/{userId} → DB query → response
+```text
+User opens page -> GET /notifications/{userId} -> DB query -> response
 ```
 
-| Issue | Impact |
-|-------|--------|
-| **DB hit on every page load** | Every user session triggers a read query, even if nothing changed since the last visit. |
-| **High read traffic** | Thousands of concurrent users overwhelm the primary database with identical queries. |
-| **Increased latency** | Response times grow as the DB connection pool saturates, degrading user experience. |
-
-At scale, this pattern is unsustainable without optimization.
+If every page load hits the database, active users generate repeated reads even when nothing changed. Under load, that fills the connection pool and pushes response times up.
 
 ---
 
@@ -488,106 +468,65 @@ At scale, this pattern is unsustainable without optimization.
 
 ### A. Caching (Redis)
 
-Cache recent notifications per user in Redis to short-circuit DB reads.
+Cache recent notifications per user in Redis so common reads avoid the database.
 
-**Implementation**
-
-```
+```text
 GET /notifications/{userId}
-  → Check Redis (key: notifications:{userId})
-  → Cache HIT  → return cached data
-  → Cache MISS → query DB → store in Redis (TTL: 5–15 min) → return
+  -> Check Redis (key: notifications:{userId})
+  -> Cache HIT -> return cached data
+  -> Cache MISS -> query DB -> store in Redis (TTL: 5-15 min) -> return
 ```
 
-- **Invalidation**: On new notification, delete or update the user's cache key.
-- **Data structure**: Redis Sorted Set (score = `createdAt` timestamp) for efficient range queries.
+- **Invalidation**: delete or update the user's cache key when a new notification is created.
+- **Data structure**: Redis Sorted Set, with `createdAt` timestamp as the score.
 
-| Trade-off | Detail |
-|-----------|--------|
-| Data may be slightly stale | Up to TTL duration (acceptable for notifications) |
-| Requires cache management | Invalidation logic on write path, TTL tuning |
-
----
+Trade-offs: data can be stale up to the TTL, and the write path needs cache invalidation logic.
 
 ### B. Pagination / Lazy Loading
 
-Fetch a fixed page size instead of the full notification history.
+Fetch a fixed page size instead of the full history.
 
-```
+```text
 GET /notifications/{userId}?limit=20&cursor=<last_createdAt>
 ```
 
-- First load returns the 20 most recent.
-- "Load more" fetches the next page using the cursor.
-
-| Trade-off | Detail |
-|-----------|--------|
-| Slight client complexity | Client must track cursor and trigger next-page fetches |
-| Multiple API calls | One per page instead of one for all — but each is fast |
-
----
+The first load returns the latest 20 notifications. "Load more" requests the next page with the cursor. This adds a little client-side state, but each API call stays fast.
 
 ### C. Push-Based Model (WebSockets / SSE)
 
-Deliver notifications only when a new event occurs — no polling.
-
-```
-Client connects → WebSocket open
-Server creates notification → pushes to connected client instantly
+```text
+Client connects -> WebSocket open
+Server creates notification -> pushes to connected client instantly
 ```
 
-- Eliminates repeated `GET` calls entirely for active users.
-- Falls back to polling for disconnected clients.
+This removes repeated `GET` calls for connected users. Disconnected clients can still fall back to polling.
 
-| Trade-off | Detail |
-|-----------|--------|
-| Persistent connections | Each connected user holds a socket — memory and connection pool cost |
-| Complex backend | Requires connection management, heartbeats, reconnection handling |
-
----
+Trade-offs: persistent connections use memory and require connection management, heartbeats, and reconnect handling.
 
 ### D. Read Replicas
 
-Distribute read queries across multiple database replicas.
-
-```
-Writes → Primary DB
-Reads  → Replica 1, Replica 2, … (load-balanced)
+```text
+Writes -> Primary DB
+Reads  -> Replica 1, Replica 2, ... (load-balanced)
 ```
 
-- Linear read scalability by adding replicas.
-- Primary handles writes only.
-
-| Trade-off | Detail |
-|-----------|--------|
-| Replication lag | Replicas may be milliseconds behind — a user might not see a just-sent notification immediately |
-| Infrastructure cost | Each replica is a full DB instance (compute + storage) |
-
----
+Read replicas scale read traffic without overloading the primary. One thing to note: replicas can lag by a few milliseconds, so a just-sent notification may not appear immediately.
 
 ### E. Background Processing (Message Queue)
 
-Decouple notification creation from the API response using Kafka or RabbitMQ.
-
-```
+```text
 POST /notifications/send
-  → Publish to queue → return 201 immediately
-  → Worker consumes → INSERT into DB → push via WebSocket → invalidate cache
+  -> Publish to queue -> return 201 immediately
+  -> Worker consumes -> INSERT into DB -> push via WebSocket -> invalidate cache
 ```
 
-- The sender never waits for fan-out to complete.
-- Workers can be scaled independently.
+The sender does not wait for fan-out. Workers can be scaled separately as write volume grows.
 
-| Trade-off | Detail |
-|-----------|--------|
-| System complexity | Adds queue infrastructure, dead-letter handling, monitoring |
-| Eventual consistency | Notification appears after a short delay (typically < 1s) |
-
----
+Trade-offs: this adds queue infrastructure, dead-letter handling, monitoring, and a small amount of eventual consistency.
 
 ### F. Pre-computation / Materialized Views
 
-Maintain a pre-built notification feed per user, updated on write.
+Maintain a flattened feed per user and update it on write.
 
 ```sql
 CREATE MATERIALIZED VIEW user_notification_feed AS
@@ -597,108 +536,71 @@ JOIN notifications n ON un.notification_id = n.id
 ORDER BY n.created_at DESC;
 ```
 
-- Reads become simple index scans on a flat, denormalized table.
-- Refresh on schedule or trigger.
-
-| Trade-off | Detail |
-|-----------|--------|
-| Extra storage | Duplicates data in a denormalized form |
-| Refresh cost | Periodic `REFRESH MATERIALIZED VIEW` or trigger-based updates add write overhead |
+Reads become simple scans on a denormalized feed. The cost is extra storage and either scheduled refreshes or trigger-based update overhead.
 
 ---
 
 ## 3. Recommended Approach
 
-Combine three complementary strategies:
+Use three pieces together:
 
-```
-┌──────────────────────────────────────────────────────┐
-│                  Client Request                      │
-│                                                      │
-│   ① Redis Cache ──── fast path (< 1ms)               │
-│        ↓ miss                                        │
-│   ② Read Replica ── offloads primary DB              │
-│        ↓ results                                     │
-│   ③ Paginated ───── returns only 20 rows per call    │
-│                                                      │
-└──────────────────────────────────────────────────────┘
-```
+- **Redis caching** for the hot path. Repeat reads by active users do not touch the DB.
+- **Pagination** to cap response size and keep cache misses cheap.
+- **Read replicas** to absorb remaining read traffic while the primary handles writes.
 
-| Strategy | Role |
-|----------|------|
-| **Redis caching** | Eliminates 80%+ of DB reads. Most users hit cache on repeat visits. |
-| **Pagination** | Caps response size. Ensures fast queries even on cache miss. |
-| **Read replicas** | Handles cache-miss traffic without overloading the primary. Protects write performance. |
-
-### Why This Combination Works
-
-- **Redis** handles the hot path — repeated reads by active users never touch the DB.
-- **Pagination** ensures that even cold queries (cache miss, no replica) remain fast by limiting row count.
-- **Read replicas** absorb the remaining read load, keeping the primary DB free for writes.
-- All three are **operationally simple**, well-supported by managed cloud services, and introduce **no eventual consistency issues** that affect user experience.
-
-Add **WebSockets** and **message queues** as the next scaling step when real-time delivery and high write throughput become bottlenecks.
+This works well because it improves the common case without making the system much harder to operate. Add **WebSockets** and **message queues** when real-time delivery or high write throughput becomes the bottleneck.
 
 ---
 
 # Stage 5: Reliable Notification Delivery and Failure Handling
 
-## 1. Problems with the Current (Synchronous) Approach
+## 1. Problems with the Current Synchronous Approach
 
-```
+```text
 POST /notifications/send
-  → for each student:
-       send_email()      ← blocks
-       save_to_db()      ← blocks
-       send_push()       ← blocks
-  → return 200
+  -> for each student:
+       send_email()
+       save_to_db()
+       send_push()
+  -> return 200
 ```
 
-| Problem | Impact |
-|---------|--------|
-| **Sequential processing** | Notifying 50,000 users takes minutes — each call waits for the previous one to finish. |
-| **No retry mechanism** | If `send_email()` fails for a user, that notification is silently lost. |
-| **Partial completion** | If the server crashes at user 25,000, the first half is sent but the second half is not — no way to resume. |
-| **Tight coupling** | Email, DB, and push are chained — a slow email provider blocks DB writes and push delivery. |
+The synchronous version is easy to understand, but it does not hold up for large fan-out:
+
+- **Sequential processing**: notifying 50,000 users can take minutes.
+- **No retry mechanism**: if `send_email()` fails, the notification can be lost.
+- **Partial completion**: if the server crashes at user 25,000, there is no clean resume point.
+- **Tight coupling**: a slow email provider can block DB writes and push delivery.
 
 ---
 
-## 2. Redesigned Architecture — Async Queue-Based
+## 2. Redesigned Architecture - Async Queue-Based
 
-```
-┌────────┐       ┌───────────────┐       ┌─────────────────────┐
-│  API   │──────▶│  Message Queue │──────▶│  Worker Pool        │
-│        │       │  (Kafka/RMQ)  │       │                     │
-│ enqueue│       │               │       │  ┌─ send_email()    │
-│ 50,000 │       │  job per user │       │  ├─ save_to_db()    │
-│ jobs   │       │               │       │  └─ send_push()     │
-└────────┘       └───────────────┘       └─────────────────────┘
-     │                                          │
-     ▼                                          ▼
- Return 202                              Process independently
- (Accepted)                              (parallel workers)
+```text
+API -> Message Queue (Kafka/RMQ) -> Worker Pool
+ |                                  |
+ enqueue one job per user           send_email()
+ return 202 Accepted                save_to_db()
+                                    send_push()
 ```
 
 ### Flow
 
-1. **API** receives the "notify all" request.
-2. **Enqueue** one job per student into the message queue (Kafka / RabbitMQ).
-3. **Return `202 Accepted`** immediately — the caller does not wait.
-4. **Workers** consume jobs concurrently and process each independently:
-   - Send email
-   - Store notification in DB
-   - Send push notification
-5. Each channel (email, DB, push) succeeds or fails **independently**.
+1. API receives the "notify all" request.
+2. It enqueues one job per student into Kafka or RabbitMQ.
+3. API returns `202 Accepted` immediately.
+4. Workers consume jobs concurrently.
+5. Email, DB, and push delivery succeed or fail independently.
 
 ---
 
-## 3. Retry Mechanism — Exponential Backoff
+## 3. Retry Mechanism - Exponential Backoff
 
 ### Job Status Lifecycle
 
-```
-pending → processing → sent
-                     ↘ failed → retry (1) → retry (2) → retry (3) → dead_letter
+```text
+pending -> processing -> sent
+                     -> failed -> retry (1) -> retry (2) -> retry (3) -> dead_letter
 ```
 
 ### Retry Strategy
@@ -708,7 +610,7 @@ pending → processing → sent
 | 1st retry | 2 seconds | Re-enqueue with backoff |
 | 2nd retry | 8 seconds | Re-enqueue with backoff |
 | 3rd retry | 32 seconds | Re-enqueue with backoff |
-| Max retries exceeded | — | Move to **dead-letter queue** for manual review |
+| Max retries exceeded | - | Move to **dead-letter queue** for manual review |
 
 ### Status Field
 
@@ -717,10 +619,10 @@ ALTER TABLE user_notifications ADD COLUMN status VARCHAR(10) DEFAULT 'pending';
 -- Values: pending | sent | failed | retried
 ```
 
-- **`pending`** — job created, not yet processed.
-- **`sent`** — all channels delivered successfully.
-- **`failed`** — delivery failed after all retries.
-- **`retried`** — currently being retried.
+- `pending`: job created, not processed yet.
+- `sent`: all channels delivered successfully.
+- `failed`: delivery failed after all retries.
+- `retried`: currently being retried.
 
 ---
 
@@ -728,31 +630,29 @@ ALTER TABLE user_notifications ADD COLUMN status VARCHAR(10) DEFAULT 'pending';
 
 ### Independent Channels
 
-Each delivery channel runs as a separate operation. Failure in one does not block others.
+Each delivery channel runs separately. If email fails, DB storage and push delivery can still succeed.
 
-```
+```text
 Worker processes job for student_1042:
-  ✓ save_to_db()     → success
-  ✗ send_email()     → failed (SMTP timeout) → enqueue retry for email only
-  ✓ send_push()      → success
+  save_to_db() -> success
+  send_email() -> failed (SMTP timeout) -> enqueue retry for email only
+  send_push()  -> success
 ```
 
-- The student still sees the push notification and the DB record.
-- Only the email is retried.
+The student still sees the push notification and DB record. Only the failed channel is retried.
 
 ### Idempotency
 
-Prevent duplicate sends if a job is retried or redelivered by the queue.
+Retries and queue redelivery can create duplicates unless processing is idempotent.
 
-```
+```text
 Before processing:
-  → Check: has this (student_id, notification_id, channel) already been delivered?
-  → If yes → skip
-  → If no  → process and mark delivered
+  -> Check whether (student_id, notification_id, channel) was already delivered
+  -> If yes, skip
+  -> If no, process and mark delivered
 ```
 
-- Use a **unique constraint** on `(user_id, notification_id)` in `user_notifications`.
-- Store per-channel delivery status if needed:
+Use a unique constraint on `(user_id, notification_id)` in `user_notifications`. Store per-channel delivery status if needed:
 
 ```sql
 CREATE TABLE delivery_log (
@@ -770,7 +670,7 @@ CREATE TABLE delivery_log (
 
 ## 5. Logging
 
-Log every step for observability and debugging.
+Log enough to debug failed delivery without digging through unrelated request logs.
 
 | Event | Log Level | Example Message |
 |-------|-----------|-----------------|
@@ -782,15 +682,13 @@ Log every step for observability and debugging.
 | Retry triggered | `warn` | `Retrying: student=1042, channel=email, attempt=2/3, delay=8s` |
 | Dead-lettered | `error` | `Dead-lettered: student=1042, channel=email, max retries exceeded` |
 
-All logs include: `timestamp`, `student_id`, `notification_id`, `channel`, `status`.
+Every log should include `timestamp`, `student_id`, `notification_id`, `channel`, and `status`.
 
 ---
 
 ## 6. Pseudocode
 
 ```python
-# ── API Layer ─────────────────────────────────────────────
-
 def notify_all(student_ids, message):
     notification_id = create_notification(message)
     for student_id in student_ids:
@@ -799,14 +697,11 @@ def notify_all(student_ids, message):
     return {"status": "accepted", "notificationId": notification_id}  # 202
 
 
-# ── Worker Layer ──────────────────────────────────────────
-
 def worker():
     while True:
         job = queue.consume()
         log("info", f"Processing job: student={job.student_id}")
 
-        # Each channel is independent
         try:
             save_to_db(job)
             log("info", f"DB stored: student={job.student_id}")
@@ -830,15 +725,13 @@ def worker():
         mark_job_complete(job)
 
 
-# ── Retry Logic ───────────────────────────────────────────
-
 def retry_with_backoff(job, channel):
     job.attempt += 1
     if job.attempt > MAX_RETRIES:
         move_to_dead_letter_queue(job)
         log("error", f"Dead-lettered: student={job.student_id}, channel={channel}")
         return
-    delay = 2 ** (job.attempt + 1)   # 4s, 8s, 16s, 32s …
+    delay = 2 ** (job.attempt + 1)   # 4s, 8s, 16s, 32s ...
     enqueue_job(job, delay=delay)
     log("warn", f"Retrying: student={job.student_id}, channel={channel}, delay={delay}s")
 ```
@@ -849,9 +742,9 @@ def retry_with_backoff(job, channel):
 
 ### Q: What happens if email fails for 200 out of 50,000 students?
 
-**A:** Each student's job is independent in the queue. The 200 failed email jobs are retried automatically with exponential backoff. The other 49,800 are unaffected. After max retries, any remaining failures land in the dead-letter queue for manual investigation.
+Each student's job is independent. The 200 failed email jobs are retried automatically with exponential backoff, and the other 49,800 keep moving. After max retries, any remaining failures go to the dead-letter queue for manual investigation.
 
-### Q: Why is this design better than the synchronous approach?
+### Q: Why is this better than the synchronous approach?
 
 | Aspect | Synchronous | Async (Queue-Based) |
 |--------|-------------|---------------------|
