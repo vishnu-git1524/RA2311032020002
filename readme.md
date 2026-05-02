@@ -2,7 +2,7 @@
 
 ## Overview
 
-This project contains a simple backend setup with a modular structure.
+Project contains a simple backend setup with a modular structure.
 The focus is on clean organization, basic service logic, and consistent logging across components.
 
 ## Setup
