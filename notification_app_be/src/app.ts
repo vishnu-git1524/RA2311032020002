@@ -1,9 +1,19 @@
 import "dotenv/config";
 import express, { Request, Response, NextFunction } from "express";
+import axios, { AxiosError } from "axios";
 import { log } from "../../logging_middleware/src/logger";
+import {
+  scoreAndSort,
+  NotificationsApiResponse,
+} from "./priority";
 
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3002;
+
+// ── Constants ────────────────────────────────────────────────────────────────
+const BASE_URL = "http://20.207.122.201/evaluation-service";
+const AUTH_TOKEN = process.env.AUTH_TOKEN || "";
+const AUTH_HEADER = { Authorization: `Bearer ${AUTH_TOKEN}` };
 
 // ── Body parsing ─────────────────────────────────────────────────────────────
 app.use(express.json());
@@ -46,6 +56,53 @@ app.post("/notifications", async (req: Request, res: Response) => {
 
   await log("backend", "info", "handler", `Notification created: ${type}`);
   res.status(201).json({ id: Date.now(), type, message, read: false });
+});
+
+/**
+ * GET /priority-notifications?limit=10
+ *
+ * Fetches notifications from the external evaluation service,
+ * scores them by type weight + recency, and returns the top N.
+ */
+app.get("/priority-notifications", async (req: Request, res: Response) => {
+  try {
+    const limit = Math.max(1, parseInt(req.query.limit as string, 10) || 10);
+
+    // ── 1. Fetch from external API ──────────────────────────────────────
+    await log("backend", "info", "handler",
+      `Priority notifications requested (limit=${limit})`);
+
+    const response = await axios.get<NotificationsApiResponse>(
+      `${BASE_URL}/notifications`,
+      { headers: AUTH_HEADER, timeout: 10000 }
+    );
+
+    const raw = response.data.notifications;
+
+    await log("backend", "info", "handler",
+      `Fetched ${raw.length} notifications from external API`);
+
+    // ── 2. Score and sort ───────────────────────────────────────────────
+    const scored = scoreAndSort(raw);
+
+    await log("backend", "info", "handler",
+      `Scoring and sorting completed — returning top ${Math.min(limit, scored.length)} of ${scored.length}`);
+
+    // ── 3. Return top N ─────────────────────────────────────────────────
+    res.json({ notifications: scored.slice(0, limit) });
+  } catch (err) {
+    const axiosErr = err as AxiosError;
+    const status = axiosErr.response?.status ?? "NETWORK_ERROR";
+    const message = axiosErr.message || "Unknown error fetching notifications";
+
+    await log("backend", "error", "handler",
+      `Priority notifications failed: ${message} (${status})`);
+
+    res.status(502).json({
+      error: "Failed to fetch notifications",
+      details: message,
+    });
+  }
 });
 
 // ── Global error handler ─────────────────────────────────────────────────────
