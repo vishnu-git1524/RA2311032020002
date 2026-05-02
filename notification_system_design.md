@@ -639,3 +639,225 @@ Combine three complementary strategies:
 
 Add **WebSockets** and **message queues** as the next scaling step when real-time delivery and high write throughput become bottlenecks.
 
+---
+
+# Stage 5: Reliable Notification Delivery and Failure Handling
+
+## 1. Problems with the Current (Synchronous) Approach
+
+```
+POST /notifications/send
+  → for each student:
+       send_email()      ← blocks
+       save_to_db()      ← blocks
+       send_push()       ← blocks
+  → return 200
+```
+
+| Problem | Impact |
+|---------|--------|
+| **Sequential processing** | Notifying 50,000 users takes minutes — each call waits for the previous one to finish. |
+| **No retry mechanism** | If `send_email()` fails for a user, that notification is silently lost. |
+| **Partial completion** | If the server crashes at user 25,000, the first half is sent but the second half is not — no way to resume. |
+| **Tight coupling** | Email, DB, and push are chained — a slow email provider blocks DB writes and push delivery. |
+
+---
+
+## 2. Redesigned Architecture — Async Queue-Based
+
+```
+┌────────┐       ┌───────────────┐       ┌─────────────────────┐
+│  API   │──────▶│  Message Queue │──────▶│  Worker Pool        │
+│        │       │  (Kafka/RMQ)  │       │                     │
+│ enqueue│       │               │       │  ┌─ send_email()    │
+│ 50,000 │       │  job per user │       │  ├─ save_to_db()    │
+│ jobs   │       │               │       │  └─ send_push()     │
+└────────┘       └───────────────┘       └─────────────────────┘
+     │                                          │
+     ▼                                          ▼
+ Return 202                              Process independently
+ (Accepted)                              (parallel workers)
+```
+
+### Flow
+
+1. **API** receives the "notify all" request.
+2. **Enqueue** one job per student into the message queue (Kafka / RabbitMQ).
+3. **Return `202 Accepted`** immediately — the caller does not wait.
+4. **Workers** consume jobs concurrently and process each independently:
+   - Send email
+   - Store notification in DB
+   - Send push notification
+5. Each channel (email, DB, push) succeeds or fails **independently**.
+
+---
+
+## 3. Retry Mechanism — Exponential Backoff
+
+### Job Status Lifecycle
+
+```
+pending → processing → sent
+                     ↘ failed → retry (1) → retry (2) → retry (3) → dead_letter
+```
+
+### Retry Strategy
+
+| Attempt | Delay | Action |
+|---------|-------|--------|
+| 1st retry | 2 seconds | Re-enqueue with backoff |
+| 2nd retry | 8 seconds | Re-enqueue with backoff |
+| 3rd retry | 32 seconds | Re-enqueue with backoff |
+| Max retries exceeded | — | Move to **dead-letter queue** for manual review |
+
+### Status Field
+
+```sql
+ALTER TABLE user_notifications ADD COLUMN status VARCHAR(10) DEFAULT 'pending';
+-- Values: pending | sent | failed | retried
+```
+
+- **`pending`** — job created, not yet processed.
+- **`sent`** — all channels delivered successfully.
+- **`failed`** — delivery failed after all retries.
+- **`retried`** — currently being retried.
+
+---
+
+## 4. Fault Tolerance
+
+### Independent Channels
+
+Each delivery channel runs as a separate operation. Failure in one does not block others.
+
+```
+Worker processes job for student_1042:
+  ✓ save_to_db()     → success
+  ✗ send_email()     → failed (SMTP timeout) → enqueue retry for email only
+  ✓ send_push()      → success
+```
+
+- The student still sees the push notification and the DB record.
+- Only the email is retried.
+
+### Idempotency
+
+Prevent duplicate sends if a job is retried or redelivered by the queue.
+
+```
+Before processing:
+  → Check: has this (student_id, notification_id, channel) already been delivered?
+  → If yes → skip
+  → If no  → process and mark delivered
+```
+
+- Use a **unique constraint** on `(user_id, notification_id)` in `user_notifications`.
+- Store per-channel delivery status if needed:
+
+```sql
+CREATE TABLE delivery_log (
+    id              UUID PRIMARY KEY,
+    user_id         UUID NOT NULL,
+    notification_id UUID NOT NULL,
+    channel         VARCHAR(10),  -- 'email', 'push', 'db'
+    status          VARCHAR(10),  -- 'sent', 'failed'
+    attempted_at    TIMESTAMP DEFAULT NOW(),
+    UNIQUE (user_id, notification_id, channel)
+);
+```
+
+---
+
+## 5. Logging
+
+Log every step for observability and debugging.
+
+| Event | Log Level | Example Message |
+|-------|-----------|-----------------|
+| Job created | `info` | `Job enqueued: student=1042, notification=ntf_abc` |
+| Email sent | `info` | `Email delivered: student=1042, channel=email` |
+| Push sent | `info` | `Push delivered: student=1042, channel=push` |
+| DB stored | `info` | `Notification stored: student=1042, notification=ntf_abc` |
+| Failure | `error` | `Email failed: student=1042, error=SMTP_TIMEOUT, attempt=1/3` |
+| Retry triggered | `warn` | `Retrying: student=1042, channel=email, attempt=2/3, delay=8s` |
+| Dead-lettered | `error` | `Dead-lettered: student=1042, channel=email, max retries exceeded` |
+
+All logs include: `timestamp`, `student_id`, `notification_id`, `channel`, `status`.
+
+---
+
+## 6. Pseudocode
+
+```python
+# ── API Layer ─────────────────────────────────────────────
+
+def notify_all(student_ids, message):
+    notification_id = create_notification(message)
+    for student_id in student_ids:
+        enqueue_job(student_id, notification_id, message)
+    log("info", f"Enqueued {len(student_ids)} jobs for notification {notification_id}")
+    return {"status": "accepted", "notificationId": notification_id}  # 202
+
+
+# ── Worker Layer ──────────────────────────────────────────
+
+def worker():
+    while True:
+        job = queue.consume()
+        log("info", f"Processing job: student={job.student_id}")
+
+        # Each channel is independent
+        try:
+            save_to_db(job)
+            log("info", f"DB stored: student={job.student_id}")
+        except Exception as e:
+            log("error", f"DB failed: student={job.student_id}, error={e}")
+
+        try:
+            send_email(job.student_id, job.message)
+            log("info", f"Email sent: student={job.student_id}")
+        except Exception as e:
+            log("error", f"Email failed: student={job.student_id}, error={e}")
+            retry_with_backoff(job, channel="email")
+
+        try:
+            send_push(job.student_id, job.message)
+            log("info", f"Push sent: student={job.student_id}")
+        except Exception as e:
+            log("error", f"Push failed: student={job.student_id}, error={e}")
+            retry_with_backoff(job, channel="push")
+
+        mark_job_complete(job)
+
+
+# ── Retry Logic ───────────────────────────────────────────
+
+def retry_with_backoff(job, channel):
+    job.attempt += 1
+    if job.attempt > MAX_RETRIES:
+        move_to_dead_letter_queue(job)
+        log("error", f"Dead-lettered: student={job.student_id}, channel={channel}")
+        return
+    delay = 2 ** (job.attempt + 1)   # 4s, 8s, 16s, 32s …
+    enqueue_job(job, delay=delay)
+    log("warn", f"Retrying: student={job.student_id}, channel={channel}, delay={delay}s")
+```
+
+---
+
+## 7. FAQ
+
+### Q: What happens if email fails for 200 out of 50,000 students?
+
+**A:** Each student's job is independent in the queue. The 200 failed email jobs are retried automatically with exponential backoff. The other 49,800 are unaffected. After max retries, any remaining failures land in the dead-letter queue for manual investigation.
+
+### Q: Why is this design better than the synchronous approach?
+
+| Aspect | Synchronous | Async (Queue-Based) |
+|--------|-------------|---------------------|
+| **Processing** | Sequential, one-by-one | Parallel across worker pool |
+| **Fault isolation** | One failure can block all | Each job fails independently |
+| **Scalability** | Limited by single process | Scale workers horizontally |
+| **Reliability** | No retry, no resume | Automatic retry + dead-letter |
+| **Response time** | Blocks until all done | Returns `202` immediately |
+| **Observability** | Limited | Full per-job logging |
