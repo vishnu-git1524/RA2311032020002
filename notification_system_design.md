@@ -1,117 +1,164 @@
-# Notification System Design
+# Stage 1: Notification System Design
 
 ## Overview
 
-This document outlines the architecture and design of the AffordMed notification system backend, built with **TypeScript** and **Express**.
+REST API design for a backend notification platform that supports sending, retrieving, updating, and deleting notifications with real-time delivery capabilities.
 
-## Components
+---
 
-### 1. Logging Middleware (`logging_middleware`)
-- Centralized logging service that sends structured logs to the AffordMed evaluation endpoint.
-- Strict TypeScript types enforcing valid `stack`, `level`, and `package` values.
-- Convenience helpers: `debug()`, `info()`, `warn()`, `error()`, `fatal()`.
-- Reusable across all backend and frontend services.
+## Common Headers
 
-### 2. Vehicle Maintenance Scheduler (`vehicle_maintenance_scheduler`)
-- Express-based REST API for managing vehicle maintenance schedules.
-- Integrates the logging middleware for request/event tracking.
-- Input validation with typed request bodies.
+| Header          | Value                 | Required |
+|-----------------|-----------------------|----------|
+| Authorization   | `Bearer <token>`      | Yes      |
+| Content-Type    | `application/json`    | Yes      |
 
-### 3. Notification App Backend (`notification_app_be`)
-- Express-based REST API that handles notification delivery and management.
-- Integrates the logging middleware for request/event tracking.
-- Input validation with typed request bodies.
+---
 
-## Architecture
+## API Endpoints
 
-```
-┌──────────────────────────────┐
-│       External Clients       │
-└──────────┬───────────────────┘
-           │
-     ┌─────▼──────┐     ┌──────────────┐
-     │ notification│     │   vehicle     │
-     │  _app_be   │     │ maintenance  │
-     │  (Express) │     │ _scheduler   │
-     │  :3002     │     │  (Express)   │
-     └─────┬──────┘     │  :3001       │
-           │            └──────┬───────┘
-     ┌─────▼───────────────────▼──────┐
-     │      logging_middleware        │
-     │   (Shared TypeScript Module)   │
-     └───────────────┬────────────────┘
-                     │ POST
-         ┌───────────▼────────────┐
-         │  Evaluation Service    │
-         │  20.207.122.201        │
-         └────────────────────────┘
-```
+### A. `POST /notifications/send`
 
-## Log API Contract
+Send a notification to one or multiple users.
 
-### Endpoint
-`POST http://20.207.122.201/evaluation-service/logs`
+**Request Body**
 
-### Headers
-| Header          | Value                |
-|-----------------|----------------------|
-| Content-Type    | application/json     |
-| Authorization   | Bearer \<TOKEN\>     |
-
-### Request Body
 ```json
 {
-  "stack": "backend",
-  "level": "error",
-  "package": "handler",
-  "message": "received string, expected bool"
+  "userIds": ["user_01", "user_02"],
+  "title": "Maintenance Alert",
+  "message": "Your vehicle service is due tomorrow.",
+  "type": "info"
 }
 ```
 
-### Valid Values
+| Field     | Type       | Description                             |
+|-----------|------------|-----------------------------------------|
+| userIds   | `string[]` | List of target user IDs                 |
+| title     | `string`   | Notification title                      |
+| message   | `string`   | Notification body                       |
+| type      | `string`   | One of: `info`, `alert`, `warning`      |
 
-| Field   | Backend                                                                                          | Frontend                                               | Both                              |
-|---------|--------------------------------------------------------------------------------------------------|--------------------------------------------------------|-----------------------------------|
-| Stack   | `"backend"`                                                                                      | `"frontend"`                                           | —                                 |
-| Level   | `"debug"`, `"info"`, `"warn"`, `"error"`, `"fatal"`                                              | same                                                   | same                              |
-| Package | `"cache"`, `"controller"`, `"cron_job"`, `"db"`, `"dbsilo"`, `"handler"`, `"repository"`, `"route"`, `"service"` | `"api"`, `"component"`, `"hook"`, `"page"`, `"state"`, `"style"` | `"auth"`, `"config"`, `"middleware"`, `"utils"` |
+**Response** — `201 Created`
 
-### Response (200)
 ```json
 {
-  "logID": "a4aad82e-1900-4153-86d9-58bf55d7c402",
-  "message": "log created successfully"
+  "status": "success",
+  "notificationId": "ntf_a3f8c912"
 }
 ```
 
-## Endpoints
+---
 
-### Vehicle Maintenance Scheduler (:3001)
-| Method | Path        | Description                     |
-|--------|-------------|---------------------------------|
-| GET    | `/`         | Health check                    |
-| GET    | `/schedules`| Fetch maintenance schedules     |
-| POST   | `/schedules`| Create a new maintenance entry  |
+### B. `GET /notifications/{userId}`
 
-### Notification App Backend (:3002)
-| Method | Path              | Description                |
-|--------|-------------------|----------------------------|
-| GET    | `/`               | Health check               |
-| GET    | `/notifications`  | Fetch notifications        |
-| POST   | `/notifications`  | Create a new notification  |
+Fetch all notifications for a specific user.
 
-## Running
+**Response** — `200 OK`
 
-```bash
-# Install dependencies for each module
-cd logging_middleware   && npm install
-cd vehicle_maintenance_scheduler && npm install
-cd notification_app_be && npm install
-
-# Development (any service)
-npm run dev
-
-# Production build & start
-npm run build
-npm start
+```json
+{
+  "notifications": [
+    {
+      "id": "ntf_a3f8c912",
+      "title": "Maintenance Alert",
+      "message": "Your vehicle service is due tomorrow.",
+      "type": "info",
+      "read": false,
+      "createdAt": "2026-05-02T10:30:00Z"
+    }
+  ]
+}
 ```
+
+| Field     | Type        | Description                        |
+|-----------|-------------|------------------------------------|
+| id        | `string`    | Unique notification ID             |
+| title     | `string`    | Notification title                 |
+| message   | `string`    | Notification body                  |
+| type      | `string`    | `info` / `alert` / `warning`       |
+| read      | `boolean`   | Whether the user has read it       |
+| createdAt | `timestamp` | ISO 8601 creation timestamp        |
+
+---
+
+### C. `PATCH /notifications/{id}/read`
+
+Mark a single notification as read.
+
+**Response** — `200 OK`
+
+```json
+{
+  "status": "updated"
+}
+```
+
+---
+
+### D. `DELETE /notifications/{id}`
+
+Delete a notification permanently.
+
+**Response** — `200 OK`
+
+```json
+{
+  "status": "deleted"
+}
+```
+
+---
+
+## Error Response Format
+
+All endpoints return errors in a consistent structure:
+
+```json
+{
+  "error": {
+    "code": "UNAUTHORIZED",
+    "message": "Invalid or expired authorization token."
+  }
+}
+```
+
+| Code                | HTTP Status | When                              |
+|---------------------|-------------|-----------------------------------|
+| `UNAUTHORIZED`      | 401         | Missing or invalid Bearer token   |
+| `NOT_FOUND`         | 404         | Notification or user not found    |
+| `VALIDATION_ERROR`  | 400         | Malformed or missing fields       |
+| `INTERNAL_ERROR`    | 500         | Unexpected server failure         |
+
+---
+
+## Real-Time Notification Design
+
+### Delivery Mechanism
+
+Use **WebSockets** or **Server-Sent Events (SSE)** for instant push delivery.
+
+```
+┌────────┐          ┌────────────┐          ┌────────┐
+│ Sender │──POST──▶│   Server   │──push──▶ │ Client │
+└────────┘          └────────────┘          └────────┘
+                         │
+                    WebSocket / SSE
+                    connection held open
+```
+
+### Flow
+
+1. Client opens a persistent connection (WebSocket or SSE) on login.
+2. When `POST /notifications/send` is called, the server:
+   - Stores the notification.
+   - Pushes it to all connected target users instantly.
+3. Client receives and renders the notification without polling.
+
+### Fallback Strategy
+
+If the real-time connection drops or is unsupported:
+
+- Client falls back to **short polling** via `GET /notifications/{userId}` at a configurable interval (e.g. every 15s).
+- On reconnect, the client fetches any missed notifications since the last known timestamp.
+
