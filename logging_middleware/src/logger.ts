@@ -15,20 +15,10 @@ const DEFAULT_CONFIG: LoggerConfig = {
   defaultStack: "backend",
 };
 
-/**
- * Sends a structured log entry to the AffordMed evaluation service.
- *
- * @param stack   - "backend" or "frontend"
- * @param level   - "debug" | "info" | "warn" | "error" | "fatal"
- * @param pkg     - Package origin of the log (must be valid for the given stack)
- * @param message - Human-readable description of the event
- * @param config  - Optional overrides for base URL / token / stack
- * @returns       - The LogResponse on success, or null on failure
- */
 export async function log(
   stack: Stack,
   level: Level,
-  pkg: Package,
+  packageName: Package,
   message: string,
   config: Partial<LoggerConfig> = {}
 ): Promise<LogResponse | null> {
@@ -37,12 +27,12 @@ export async function log(
   const payload: LogPayload = {
     stack,
     level,
-    package: pkg,
+    package: packageName,
     message,
   };
 
   try {
-    const { data } = await axios.post<LogResponse>(
+    const { data: logResponse } = await axios.post<LogResponse>(
       `${baseUrl}/evaluation-service/logs`,
       payload,
       {
@@ -54,33 +44,34 @@ export async function log(
       }
     );
 
-    console.log(`[LOG ✓] ${stack}/${pkg} ${level.toUpperCase()}: ${message}`);
-    return data;
-  } catch (err) {
-    const axiosErr = err as AxiosError;
-    const status = axiosErr.response?.status ?? "NETWORK_ERROR";
+    console.log(
+      `[LOG OK] ${stack}/${packageName} ${level.toUpperCase()}: ${message}`
+    );
+    return logResponse;
+  } catch (error) {
+    const requestError = error as AxiosError;
+    const status = requestError.response?.status ?? "NETWORK_ERROR";
+
     console.error(
-      `[LOG ✗] ${stack}/${pkg} ${level.toUpperCase()}: ${message} (${status})`
+      `[LOG FAILED] ${stack}/${packageName} ${level.toUpperCase()}: ${message} (${status})`
     );
     return null;
   }
 }
 
-// ── Convenience helpers (backend stack) ──────────────────────────────────────
+export const debug = (packageName: Package, message: string) =>
+  log("backend", "debug", packageName, message);
 
-export const debug = (pkg: Package, message: string) =>
-  log("backend", "debug", pkg, message);
+export const info = (packageName: Package, message: string) =>
+  log("backend", "info", packageName, message);
 
-export const info = (pkg: Package, message: string) =>
-  log("backend", "info", pkg, message);
+export const warn = (packageName: Package, message: string) =>
+  log("backend", "warn", packageName, message);
 
-export const warn = (pkg: Package, message: string) =>
-  log("backend", "warn", pkg, message);
+export const error = (packageName: Package, message: string) =>
+  log("backend", "error", packageName, message);
 
-export const error = (pkg: Package, message: string) =>
-  log("backend", "error", pkg, message);
-
-export const fatal = (pkg: Package, message: string) =>
-  log("backend", "fatal", pkg, message);
+export const fatal = (packageName: Package, message: string) =>
+  log("backend", "fatal", packageName, message);
 
 export { Level, Package, Stack, LogPayload, LogResponse, LoggerConfig };
