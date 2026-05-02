@@ -1,26 +1,14 @@
-/**
- * Priority scoring for notifications.
- * No external libraries — pure TypeScript implementation.
- *
- * Score = typeWeight + recencyScore
- *   - typeWeight:    "Placement" = 10, others = 5
- *   - recencyScore:  Normalized 0–10 based on how recent the notification is
- *                    relative to the oldest in the batch.
- */
-
-// ── Raw shape from the external API ──────────────────────────────────────────
 export interface RawNotification {
   ID: string;
   Type: string;
   Message: string;
-  Timestamp: string; // e.g. "2026-04-22 17:51:30"
+  Timestamp: string;
 }
 
 export interface NotificationsApiResponse {
   notifications: RawNotification[];
 }
 
-// ── Scored output ────────────────────────────────────────────────────────────
 export interface ScoredNotification {
   id: string;
   type: string;
@@ -29,59 +17,52 @@ export interface ScoredNotification {
   priorityScore: number;
 }
 
-// ── Type weights ─────────────────────────────────────────────────────────────
-const TYPE_WEIGHTS: Record<string, number> = {
+const typeWeights: Record<string, number> = {
   Placement: 10,
 };
-const DEFAULT_WEIGHT = 5;
+
+const defaultTypeWeight = 5;
 
 function getTypeWeight(type: string): number {
-  return TYPE_WEIGHTS[type] ?? DEFAULT_WEIGHT;
+  return typeWeights[type] ?? defaultTypeWeight;
 }
 
-/**
- * Compute priority scores for a batch of notifications.
- *
- * @param raw - Notifications from the external API
- * @returns   - Scored and sorted (descending) notifications
- */
-export function scoreAndSort(raw: RawNotification[]): ScoredNotification[] {
-  if (raw.length === 0) return [];
+export function scoreAndSort(
+  notifications: RawNotification[]
+): ScoredNotification[] {
+  if (notifications.length === 0) return [];
 
-  // Parse timestamps once
-  const withTime = raw.map((n) => ({
-    ...n,
-    parsedTime: new Date(n.Timestamp).getTime(),
+  const notificationsWithTime = notifications.map((notification) => ({
+    ...notification,
+    parsedTime: new Date(notification.Timestamp).getTime(),
   }));
 
-  // Find oldest and newest for normalization
-  let oldest = withTime[0].parsedTime;
-  let newest = withTime[0].parsedTime;
-  for (const n of withTime) {
-    if (n.parsedTime < oldest) oldest = n.parsedTime;
-    if (n.parsedTime > newest) newest = n.parsedTime;
+  let oldestTime = notificationsWithTime[0].parsedTime;
+  let newestTime = notificationsWithTime[0].parsedTime;
+
+  for (const notification of notificationsWithTime) {
+    if (notification.parsedTime < oldestTime) oldestTime = notification.parsedTime;
+    if (notification.parsedTime > newestTime) newestTime = notification.parsedTime;
   }
 
-  const range = newest - oldest || 1; // avoid division by zero
+  const timeRange = newestTime - oldestTime || 1;
 
-  // Score each notification
-  const scored: ScoredNotification[] = withTime.map((n) => {
-    const typeWeight = getTypeWeight(n.Type);
-    // Recency: 0 (oldest) → 10 (newest)
-    const recencyScore = ((n.parsedTime - oldest) / range) * 10;
+  const scoredNotifications = notificationsWithTime.map((notification) => {
+    const typeWeight = getTypeWeight(notification.Type);
+    const recencyScore =
+      ((notification.parsedTime - oldestTime) / timeRange) * 10;
     const priorityScore = parseFloat((typeWeight + recencyScore).toFixed(2));
 
     return {
-      id: n.ID,
-      type: n.Type,
-      message: n.Message,
-      createdAt: n.Timestamp,
+      id: notification.ID,
+      type: notification.Type,
+      message: notification.Message,
+      createdAt: notification.Timestamp,
       priorityScore,
     };
   });
 
-  // Sort descending by priorityScore (no external libraries)
-  scored.sort((a, b) => b.priorityScore - a.priorityScore);
-
-  return scored;
+  return scoredNotifications.sort(
+    (current, next) => next.priorityScore - current.priorityScore
+  );
 }
