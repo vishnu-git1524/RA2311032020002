@@ -464,3 +464,178 @@ ON notifications (type, createdAt);
 | `(studentID, isRead, createdAt DESC)` | Unread notifications per student | Filter + sort without file-sort |
 | `(type, createdAt)` | Notifications by type in date range | Type filter + date range scan |
 
+---
+
+# Stage 4: Performance Optimization and Trade-offs
+
+## 1. The Problem
+
+```
+User opens page → GET /notifications/{userId} → DB query → response
+```
+
+| Issue | Impact |
+|-------|--------|
+| **DB hit on every page load** | Every user session triggers a read query, even if nothing changed since the last visit. |
+| **High read traffic** | Thousands of concurrent users overwhelm the primary database with identical queries. |
+| **Increased latency** | Response times grow as the DB connection pool saturates, degrading user experience. |
+
+At scale, this pattern is unsustainable without optimization.
+
+---
+
+## 2. Solutions and Trade-offs
+
+### A. Caching (Redis)
+
+Cache recent notifications per user in Redis to short-circuit DB reads.
+
+**Implementation**
+
+```
+GET /notifications/{userId}
+  → Check Redis (key: notifications:{userId})
+  → Cache HIT  → return cached data
+  → Cache MISS → query DB → store in Redis (TTL: 5–15 min) → return
+```
+
+- **Invalidation**: On new notification, delete or update the user's cache key.
+- **Data structure**: Redis Sorted Set (score = `createdAt` timestamp) for efficient range queries.
+
+| Trade-off | Detail |
+|-----------|--------|
+| Data may be slightly stale | Up to TTL duration (acceptable for notifications) |
+| Requires cache management | Invalidation logic on write path, TTL tuning |
+
+---
+
+### B. Pagination / Lazy Loading
+
+Fetch a fixed page size instead of the full notification history.
+
+```
+GET /notifications/{userId}?limit=20&cursor=<last_createdAt>
+```
+
+- First load returns the 20 most recent.
+- "Load more" fetches the next page using the cursor.
+
+| Trade-off | Detail |
+|-----------|--------|
+| Slight client complexity | Client must track cursor and trigger next-page fetches |
+| Multiple API calls | One per page instead of one for all — but each is fast |
+
+---
+
+### C. Push-Based Model (WebSockets / SSE)
+
+Deliver notifications only when a new event occurs — no polling.
+
+```
+Client connects → WebSocket open
+Server creates notification → pushes to connected client instantly
+```
+
+- Eliminates repeated `GET` calls entirely for active users.
+- Falls back to polling for disconnected clients.
+
+| Trade-off | Detail |
+|-----------|--------|
+| Persistent connections | Each connected user holds a socket — memory and connection pool cost |
+| Complex backend | Requires connection management, heartbeats, reconnection handling |
+
+---
+
+### D. Read Replicas
+
+Distribute read queries across multiple database replicas.
+
+```
+Writes → Primary DB
+Reads  → Replica 1, Replica 2, … (load-balanced)
+```
+
+- Linear read scalability by adding replicas.
+- Primary handles writes only.
+
+| Trade-off | Detail |
+|-----------|--------|
+| Replication lag | Replicas may be milliseconds behind — a user might not see a just-sent notification immediately |
+| Infrastructure cost | Each replica is a full DB instance (compute + storage) |
+
+---
+
+### E. Background Processing (Message Queue)
+
+Decouple notification creation from the API response using Kafka or RabbitMQ.
+
+```
+POST /notifications/send
+  → Publish to queue → return 201 immediately
+  → Worker consumes → INSERT into DB → push via WebSocket → invalidate cache
+```
+
+- The sender never waits for fan-out to complete.
+- Workers can be scaled independently.
+
+| Trade-off | Detail |
+|-----------|--------|
+| System complexity | Adds queue infrastructure, dead-letter handling, monitoring |
+| Eventual consistency | Notification appears after a short delay (typically < 1s) |
+
+---
+
+### F. Pre-computation / Materialized Views
+
+Maintain a pre-built notification feed per user, updated on write.
+
+```sql
+CREATE MATERIALIZED VIEW user_notification_feed AS
+SELECT un.user_id, n.id, n.title, n.message, n.type, un.read, n.created_at
+FROM user_notifications un
+JOIN notifications n ON un.notification_id = n.id
+ORDER BY n.created_at DESC;
+```
+
+- Reads become simple index scans on a flat, denormalized table.
+- Refresh on schedule or trigger.
+
+| Trade-off | Detail |
+|-----------|--------|
+| Extra storage | Duplicates data in a denormalized form |
+| Refresh cost | Periodic `REFRESH MATERIALIZED VIEW` or trigger-based updates add write overhead |
+
+---
+
+## 3. Recommended Approach
+
+Combine three complementary strategies:
+
+```
+┌──────────────────────────────────────────────────────┐
+│                  Client Request                      │
+│                                                      │
+│   ① Redis Cache ──── fast path (< 1ms)               │
+│        ↓ miss                                        │
+│   ② Read Replica ── offloads primary DB              │
+│        ↓ results                                     │
+│   ③ Paginated ───── returns only 20 rows per call    │
+│                                                      │
+└──────────────────────────────────────────────────────┘
+```
+
+| Strategy | Role |
+|----------|------|
+| **Redis caching** | Eliminates 80%+ of DB reads. Most users hit cache on repeat visits. |
+| **Pagination** | Caps response size. Ensures fast queries even on cache miss. |
+| **Read replicas** | Handles cache-miss traffic without overloading the primary. Protects write performance. |
+
+### Why This Combination Works
+
+- **Redis** handles the hot path — repeated reads by active users never touch the DB.
+- **Pagination** ensures that even cold queries (cache miss, no replica) remain fast by limiting row count.
+- **Read replicas** absorb the remaining read load, keeping the primary DB free for writes.
+- All three are **operationally simple**, well-supported by managed cloud services, and introduce **no eventual consistency issues** that affect user experience.
+
+Add **WebSockets** and **message queues** as the next scaling step when real-time delivery and high write throughput become bottlenecks.
+
